@@ -1,0 +1,6 @@
+[[plugins]]
+  package = "netlify-plugin-flutter"
+
+[build]
+  command = "flutter build web --release"
+  publish = "build/web"
