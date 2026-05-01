@@ -788,7 +788,6 @@ class ProgramBuilderPage extends StatelessWidget {
 
   // --- CSV FEATURE: EXPORT TEMPLATE ---
   Future<void> _generateTemplate() async {
-    // 1. Create your CSV content
     List<List<String>> csvContent = [
       ["Month", "Week", "Day", "Exercise", "Unit", "Reps_List", "Weights_List"],
       [
@@ -802,19 +801,28 @@ class ProgramBuilderPage extends StatelessWidget {
       ],
     ];
 
-    // 2. Convert to String
     String csvString = const ListToCsvConverter().convert(csvContent);
-
-    // 3. Convert String to Bytes (Required for universal saving)
     Uint8List bytes = Uint8List.fromList(csvString.codeUnits);
 
-    // 4. Save the file using FileSaver (Works on Android, iOS, Web, Windows, Mac)
-    await FileSaver.instance.saveFile(
-      name: 'workout_template',
-      bytes: bytes,
-      ext: 'csv',
-      mimeType: MimeType.csv,
-    );
+    // 1. For Web and Desktop, FileSaver is perfect
+    if (identical(0, 0.0) || Platform.isWindows || Platform.isMacOS) {
+      await FileSaver.instance.saveFile(
+        name: 'workout_template',
+        bytes: bytes,
+        ext: 'csv',
+        mimeType: MimeType.csv,
+      );
+    }
+    // 2. For iPhone (iOS) and Android, use the Share Sheet so the user "sees" it happen
+    else {
+      final tempDir = await getTemporaryDirectory();
+      final file = await File('${tempDir.path}/workout_template.csv').create();
+      await file.writeAsBytes(bytes);
+
+      await Share.shareXFiles([
+        XFile(file.path),
+      ], subject: 'GymTracker Template');
+    }
   }
 
   // --- CSV FEATURE: IMPORT LOGIC ---
