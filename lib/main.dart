@@ -1,9 +1,18 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+// Firebase Imports
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'firebase_options.dart';
 
-void main() => runApp(const GymApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Initialize Firebase using the file you generated
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  runApp(const GymApp());
+}
 
 class GymApp extends StatelessWidget {
   const GymApp({super.key});
@@ -15,7 +24,28 @@ class GymApp extends StatelessWidget {
         scaffoldBackgroundColor: Colors.black,
         primaryColor: const Color(0xFF00D1B2),
       ),
-      home: const MainNavigation(),
+      // AuthGate decides if we show Login or the Main App
+      home: const AuthGate(),
+    );
+  }
+}
+
+// --- GATEKEEPER WIDGET ---
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        // If Firebase has a user session, go to the app
+        if (snapshot.hasData) {
+          return const MainNavigation();
+        }
+        // Otherwise, show the Login screen
+        return const LoginPage();
+      },
     );
   }
 }
@@ -38,19 +68,42 @@ class _MainNavigationState extends State<MainNavigation> {
     _loadData();
   }
 
+  // --- NEW: Load data from Firestore instead of SharedPreferences ---
   Future<void> _loadData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('gym_master_final_v1');
-    if (saved != null) {
-      setState(() => _programData = json.decode(saved));
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (doc.exists && doc.data() != null) {
+        setState(() {
+          _programData = doc.data()!['program'] ?? [];
+        });
+      }
+    } catch (e) {
+      debugPrint("Error loading from Firebase: $e");
     }
     setState(() => _isLoading = false);
   }
 
+  // --- NEW: Save data to Firestore instead of SharedPreferences ---
   Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('gym_master_final_v1', json.encode(_programData));
-    setState(() {});
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'program': _programData,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      setState(() {});
+    } catch (e) {
+      debugPrint("Error saving to Firebase: $e");
+    }
   }
 
   int get totalPlannedDays {
@@ -73,12 +126,13 @@ class _MainNavigationState extends State<MainNavigation> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading)
+    if (_isLoading) {
       return const Scaffold(
         body: Center(
           child: CircularProgressIndicator(color: Color(0xFF00D1B2)),
         ),
       );
+    }
 
     final List<Widget> tabs = [
       DashboardPage(
@@ -126,6 +180,13 @@ class _MainNavigationState extends State<MainNavigation> {
             ),
           ],
         ),
+        actions: [
+          // Sign Out button to test different accounts
+          IconButton(
+            icon: const Icon(LucideIcons.logOut, size: 18),
+            onPressed: () => FirebaseAuth.instance.signOut(),
+          ),
+        ],
       ),
       body: IndexedStack(index: _currentIndex, children: tabs),
       bottomNavigationBar: BottomNavigationBar(
@@ -151,7 +212,97 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 }
 
-// --- DASHBOARD PAGE ---
+// --- LOGIN PAGE ---
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _email = TextEditingController();
+  final _pass = TextEditingController();
+
+  Future<void> _auth() async {
+    try {
+      // First try to sign in
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _email.text.trim(),
+        password: _pass.text.trim(),
+      );
+    } on FirebaseAuthException catch (e) {
+      // If user doesn't exist, create the account
+      if (e.code == 'user-not-found' || e.code == 'invalid-credential') {
+        try {
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+            email: _email.text.trim(),
+            password: _pass.text.trim(),
+          );
+        } catch (signUpError) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(signUpError.toString())));
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? "Authentication Error")),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              LucideIcons.dumbbell,
+              size: 64,
+              color: Color(0xFF00D1B2),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              "GYM TRACKER",
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 40),
+            TextField(
+              controller: _email,
+              decoration: const InputDecoration(labelText: "Email"),
+            ),
+            TextField(
+              controller: _pass,
+              decoration: const InputDecoration(labelText: "Password"),
+              obscureText: true,
+            ),
+            const SizedBox(height: 30),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _auth,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00D1B2),
+                ),
+                child: const Text(
+                  "LOGIN / SIGN UP",
+                  style: TextStyle(color: Colors.black),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- REMAINING WIDGETS (DASHBOARD, WORKOUT, BUILDER, EDITOR) ---
+// These remain largely the same, but using the _save and _programData passed from MainNavigation
+
 class DashboardPage extends StatelessWidget {
   final List<dynamic> program;
   final int currentDayIdx;
@@ -357,7 +508,6 @@ class DashboardPage extends StatelessWidget {
   );
 }
 
-// --- WORKOUT SESSION PAGE ---
 class WorkoutSessionPage extends StatefulWidget {
   final Map<String, dynamic>? dayData;
   final List<dynamic> program;
@@ -440,13 +590,10 @@ class _WorkoutSessionPageState extends State<WorkoutSessionPage> {
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              ...List.generate(exercises.length, (i) {
-                var ex = exercises[i];
-                bool finished =
-                    (ex['sets'] as List).isNotEmpty &&
-                    (ex['sets'] as List).every((s) => s['done'] == true);
-                return _exerciseCard(ex, i, finished);
-              }),
+              ...List.generate(
+                exercises.length,
+                (i) => _exerciseCard(exercises[i], i),
+              ),
               const SizedBox(height: 20),
               OutlinedButton.icon(
                 onPressed: () => _showPlanView(context),
@@ -474,7 +621,10 @@ class _WorkoutSessionPageState extends State<WorkoutSessionPage> {
     );
   }
 
-  Widget _exerciseCard(dynamic ex, int i, bool finished) {
+  Widget _exerciseCard(dynamic ex, int i) {
+    bool finished =
+        (ex['sets'] as List).isNotEmpty &&
+        (ex['sets'] as List).every((s) => s['done'] == true);
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       padding: const EdgeInsets.all(16),
@@ -510,11 +660,10 @@ class _WorkoutSessionPageState extends State<WorkoutSessionPage> {
             ],
           ),
           const SizedBox(height: 12),
-          ...List.generate((ex['sets'] as List).length, (sIdx) {
-            var set = ex['sets'][sIdx];
-            String noteKey = "${i}_$sIdx";
-            return _setRow(set, sIdx, ex, noteKey);
-          }),
+          ...List.generate(
+            (ex['sets'] as List).length,
+            (sIdx) => _setRow(ex['sets'][sIdx], sIdx, ex, "${i}_$sIdx"),
+          ),
         ],
       ),
     );
@@ -628,7 +777,507 @@ class _WorkoutSessionPageState extends State<WorkoutSessionPage> {
   }
 }
 
-// --- READ ONLY PROGRAM VIEW ---
+// ... NOTE: Include ProgramBuilderPage and ExerciseEditor classes from your original code here ...
+// Make sure all calls to 'onUpdate' or 'onSave' trigger the _save() function in MainNavigation.
+
+class ProgramBuilderPage extends StatelessWidget {
+  final List<dynamic> program;
+  final VoidCallback onUpdate;
+  const ProgramBuilderPage({
+    super.key,
+    required this.program,
+    required this.onUpdate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const Text(
+          "Program Builder",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(LucideIcons.plusCircle, color: Color(0xFF00D1B2)),
+            onPressed: () => _addMonth(),
+          ),
+        ],
+      ),
+      body: program.isEmpty
+          ? const Center(child: Text("Tap + to add your first month"))
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: program.length,
+              itemBuilder: (context, mIdx) => _buildMonthSection(context, mIdx),
+            ),
+    );
+  }
+
+  Widget _buildMonthSection(BuildContext context, int mIdx) {
+    var month = program[mIdx];
+    return ExpansionTile(
+      initiallyExpanded: true,
+      title: Text(
+        month['name'].toUpperCase(),
+        style: const TextStyle(
+          color: Color(0xFF00D1B2),
+          fontWeight: FontWeight.bold,
+          fontSize: 14,
+        ),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(LucideIcons.edit2, size: 16),
+            onPressed: () => _rename(context, month),
+          ),
+          IconButton(
+            icon: const Icon(LucideIcons.copy, size: 16),
+            onPressed: () => _duplicateMonth(mIdx),
+          ),
+          IconButton(
+            icon: const Icon(LucideIcons.trash2, size: 16, color: Colors.red),
+            onPressed: () => _deleteMonth(mIdx),
+          ),
+        ],
+      ),
+      children: [
+        ...(month['weeks'] as List)
+            .asMap()
+            .entries
+            .map((e) => _buildWeekSection(context, mIdx, e.key))
+            .toList(),
+        ListTile(
+          leading: const Icon(LucideIcons.plus, size: 18),
+          title: const Text("Add New Week"),
+          onTap: () => _addWeek(mIdx),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWeekSection(BuildContext context, int mIdx, int wIdx) {
+    var week = program[mIdx]['weeks'][wIdx];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                week['name'],
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              IconButton(
+                icon: const Icon(LucideIcons.edit2, size: 14),
+                onPressed: () => _rename(context, week),
+              ),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(LucideIcons.copy, size: 14),
+                onPressed: () => _duplicateWeek(mIdx, wIdx),
+              ),
+              IconButton(
+                icon: const Icon(
+                  LucideIcons.trash2,
+                  size: 14,
+                  color: Colors.grey,
+                ),
+                onPressed: () => _deleteWeek(mIdx, wIdx),
+              ),
+            ],
+          ),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              childAspectRatio: 1.5,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+            ),
+            itemCount: (week['days'] as List).length + 1,
+            itemBuilder: (ctx, dIdx) {
+              if (dIdx == week['days'].length)
+                return _addBtn(() => _addDay(mIdx, wIdx));
+              return _dayCard(context, mIdx, wIdx, dIdx, week['days'][dIdx]);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dayCard(
+    BuildContext context,
+    int mIdx,
+    int wIdx,
+    int dIdx,
+    dynamic day,
+  ) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF161618),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Stack(
+        children: [
+          InkWell(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (c) => ExerciseEditor(dayData: day, onSave: onUpdate),
+              ),
+            ),
+            onLongPress: () => _rename(context, day),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    day['name'],
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                  Text(
+                    "${day['exercises'].length} exercises",
+                    style: const TextStyle(color: Colors.grey, fontSize: 10),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 4,
+            right: 4,
+            child: Row(
+              children: [
+                _smallIcon(
+                  LucideIcons.copy,
+                  () => _duplicateDay(mIdx, wIdx, dIdx),
+                ),
+                _smallIcon(
+                  LucideIcons.trash2,
+                  () => _deleteDay(mIdx, wIdx, dIdx),
+                  color: Colors.red.withOpacity(0.7),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _smallIcon(IconData i, VoidCallback fn, {Color? color}) =>
+      GestureDetector(
+        onTap: fn,
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(i, size: 12, color: color ?? Colors.grey),
+        ),
+      );
+  Widget _addBtn(VoidCallback fn) => GestureDetector(
+    onTap: fn,
+    child: Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.white10),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(LucideIcons.plus, color: Colors.grey),
+    ),
+  );
+
+  void _addMonth() {
+    program.add({"name": "New Month", "weeks": []});
+    onUpdate();
+  }
+
+  void _deleteMonth(int i) {
+    program.removeAt(i);
+    onUpdate();
+  }
+
+  void _duplicateMonth(int i) {
+    program.add(json.decode(json.encode(program[i])));
+    onUpdate();
+  }
+
+  void _addWeek(int m) {
+    program[m]['weeks'].add({"name": "New Week", "days": []});
+    onUpdate();
+  }
+
+  void _deleteWeek(int m, int w) {
+    program[m]['weeks'].removeAt(w);
+    onUpdate();
+  }
+
+  void _duplicateWeek(int m, int w) {
+    program[m]['weeks'].add(json.decode(json.encode(program[m]['weeks'][w])));
+    onUpdate();
+  }
+
+  void _addDay(int m, int w) {
+    program[m]['weeks'][w]['days'].add({"name": "New Day", "exercises": []});
+    onUpdate();
+  }
+
+  void _deleteDay(int m, int w, int d) {
+    program[m]['weeks'][w]['days'].removeAt(d);
+    onUpdate();
+  }
+
+  void _duplicateDay(int m, int w, int d) {
+    program[m]['weeks'][w]['days'].add(
+      json.decode(json.encode(program[m]['weeks'][w]['days'][d])),
+    );
+    onUpdate();
+  }
+
+  void _rename(BuildContext context, dynamic item) {
+    TextEditingController c = TextEditingController(text: item['name']);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Rename"),
+        content: TextField(controller: c, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () {
+              item['name'] = c.text;
+              onUpdate();
+              Navigator.pop(ctx);
+            },
+            child: const Text("SAVE"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ExerciseEditor extends StatefulWidget {
+  final Map<String, dynamic> dayData;
+  final VoidCallback onSave;
+  const ExerciseEditor({
+    super.key,
+    required this.dayData,
+    required this.onSave,
+  });
+  @override
+  State<ExerciseEditor> createState() => _ExerciseEditorState();
+}
+
+class _ExerciseEditorState extends State<ExerciseEditor> {
+  final List<String> validUnits = [
+    'kg',
+    'plate',
+    'lbs',
+    'run (mins)',
+    'run (km)',
+  ];
+  @override
+  Widget build(BuildContext context) {
+    List exList = widget.dayData['exercises'];
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: Text(widget.dayData['name']),
+      ),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: exList.length,
+        itemBuilder: (context, i) => _exTile(i),
+      ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFF00D1B2),
+        onPressed: () {
+          setState(
+            () =>
+                exList.add({"name": "New Exercise", "unit": "kg", "sets": []}),
+          );
+          widget.onSave();
+        },
+        child: const Icon(LucideIcons.plus, color: Colors.black),
+      ),
+    );
+  }
+
+  Widget _exTile(int i) {
+    var ex = widget.dayData['exercises'][i];
+    if (!validUnits.contains(ex['unit'])) ex['unit'] = 'run (mins)';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161618),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => _renameEx(ex),
+                  child: Text(
+                    ex['name'],
+                    style: const TextStyle(
+                      color: Color(0xFF00D1B2),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+              DropdownButton<String>(
+                value: ex['unit'],
+                underline: const SizedBox(),
+                items: validUnits
+                    .map(
+                      (u) => DropdownMenuItem(
+                        value: u,
+                        child: Text(u, style: const TextStyle(fontSize: 12)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  setState(() => ex['unit'] = v);
+                  widget.onSave();
+                },
+              ),
+              IconButton(
+                icon: const Icon(LucideIcons.copy, size: 14),
+                onPressed: () {
+                  setState(
+                    () => widget.dayData['exercises'].add(
+                      json.decode(json.encode(ex)),
+                    ),
+                  );
+                  widget.onSave();
+                },
+              ),
+              IconButton(
+                icon: const Icon(
+                  LucideIcons.trash2,
+                  size: 14,
+                  color: Colors.redAccent,
+                ),
+                onPressed: () {
+                  setState(() => widget.dayData['exercises'].removeAt(i));
+                  widget.onSave();
+                },
+              ),
+            ],
+          ),
+          ...List.generate(ex['sets'].length, (si) => _setRow(ex, si)),
+          TextButton(
+            onPressed: () {
+              setState(
+                () =>
+                    ex['sets'].add({"reps": 10, "weight": 0.0, "done": false}),
+              );
+              widget.onSave();
+            },
+            child: const Text("+ Add Set"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _setRow(dynamic ex, int si) {
+    var s = ex['sets'][si];
+    bool isCardio = ex['unit'] == 'run (mins)' || ex['unit'] == 'run (km)';
+    String label = ex['unit'] == 'run (mins)'
+        ? 'mins'
+        : (ex['unit'] == 'run (km)' ? 'km' : 'reps');
+    return Row(
+      children: [
+        Checkbox(
+          value: s['done'],
+          activeColor: const Color(0xFF00D1B2),
+          onChanged: (v) {
+            setState(() => s['done'] = v);
+            widget.onSave();
+          },
+        ),
+        Text("Set ${si + 1}"),
+        const Spacer(),
+        _num(s, 'reps', label),
+        if (!isCardio) ...[
+          const SizedBox(width: 5),
+          _num(s, 'weight', ex['unit']),
+        ],
+      ],
+    );
+  }
+
+  Widget _num(dynamic s, String k, String u) => GestureDetector(
+    onTap: () {
+      TextEditingController c = TextEditingController(text: s[k].toString());
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          content: TextField(
+            controller: c,
+            keyboardType: TextInputType.number,
+            autofocus: true,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() => s[k] = double.tryParse(c.text) ?? 0);
+                widget.onSave();
+                Navigator.pop(ctx);
+              },
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      );
+    },
+    child: Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text("${s[k]} $u", style: const TextStyle(fontSize: 12)),
+    ),
+  );
+
+  void _renameEx(dynamic ex) {
+    TextEditingController c = TextEditingController(text: ex['name']);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Rename Exercise"),
+        content: TextField(controller: c, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(() => ex['name'] = c.text);
+              widget.onSave();
+              Navigator.pop(ctx);
+            },
+            child: const Text("SAVE"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class ReadOnlyProgramView extends StatelessWidget {
   final List<dynamic> program;
   final ScrollController scrollController;
@@ -637,7 +1286,6 @@ class ReadOnlyProgramView extends StatelessWidget {
     required this.program,
     required this.scrollController,
   });
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -828,527 +1476,6 @@ class ReadOnlyProgramView extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-// --- PROGRAM BUILDER PAGE ---
-class ProgramBuilderPage extends StatelessWidget {
-  final List<dynamic> program;
-  final VoidCallback onUpdate;
-  const ProgramBuilderPage({
-    super.key,
-    required this.program,
-    required this.onUpdate,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text(
-          "Program Builder",
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.plusCircle, color: Color(0xFF00D1B2)),
-            onPressed: () => _addMonth(),
-          ),
-        ],
-      ),
-      body: program.isEmpty
-          ? const Center(child: Text("Tap + to add your first month"))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: program.length,
-              itemBuilder: (context, mIdx) => _buildMonthSection(context, mIdx),
-            ),
-    );
-  }
-
-  Widget _buildMonthSection(BuildContext context, int mIdx) {
-    var month = program[mIdx];
-    return ExpansionTile(
-      initiallyExpanded: true,
-      title: Text(
-        month['name'].toUpperCase(),
-        style: const TextStyle(
-          color: Color(0xFF00D1B2),
-          fontWeight: FontWeight.bold,
-          fontSize: 14,
-        ),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(LucideIcons.edit2, size: 16),
-            onPressed: () => _rename(context, month),
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.copy, size: 16),
-            onPressed: () => _duplicateMonth(mIdx),
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.trash2, size: 16, color: Colors.red),
-            onPressed: () => _deleteMonth(mIdx),
-          ),
-        ],
-      ),
-      children: [
-        ...(month['weeks'] as List)
-            .asMap()
-            .entries
-            .map((e) => _buildWeekSection(context, mIdx, e.key))
-            .toList(),
-        ListTile(
-          leading: const Icon(LucideIcons.plus, size: 18),
-          title: const Text("Add New Week"),
-          onTap: () => _addWeek(mIdx),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildWeekSection(BuildContext context, int mIdx, int wIdx) {
-    var week = program[mIdx]['weeks'][wIdx];
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                week['name'],
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              IconButton(
-                icon: const Icon(LucideIcons.edit2, size: 14),
-                onPressed: () => _rename(context, week),
-              ),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(LucideIcons.copy, size: 14),
-                onPressed: () => _duplicateWeek(mIdx, wIdx),
-              ),
-              IconButton(
-                icon: const Icon(
-                  LucideIcons.trash2,
-                  size: 14,
-                  color: Colors.grey,
-                ),
-                onPressed: () => _deleteWeek(mIdx, wIdx),
-              ),
-            ],
-          ),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              childAspectRatio: 1.5,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-            ),
-            itemCount: (week['days'] as List).length + 1,
-            itemBuilder: (ctx, dIdx) {
-              if (dIdx == week['days'].length)
-                return _addBtn(() => _addDay(mIdx, wIdx));
-              var day = week['days'][dIdx];
-              return _dayCard(context, mIdx, wIdx, dIdx, day);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _dayCard(
-    BuildContext context,
-    int mIdx,
-    int wIdx,
-    int dIdx,
-    dynamic day,
-  ) {
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF161618),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Stack(
-        children: [
-          InkWell(
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (c) => ExerciseEditor(dayData: day, onSave: onUpdate),
-              ),
-            ),
-            // --- ADD THIS LINE ---
-            onLongPress: () => _rename(context, day),
-            // --------------------
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    day['name'],
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 4), // Added for spacing
-                  Text(
-                    "${day['exercises'].length} exercises",
-                    style: const TextStyle(color: Colors.grey, fontSize: 10),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    "Hold to rename", // Helpful hint for the user
-                    style: TextStyle(
-                      color: Colors.white24,
-                      fontSize: 8,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            top: 4,
-            right: 4,
-            child: Row(
-              children: [
-                _smallIcon(
-                  LucideIcons.copy,
-                  () => _duplicateDay(mIdx, wIdx, dIdx),
-                ),
-                _smallIcon(
-                  LucideIcons.trash2,
-                  () => _deleteDay(mIdx, wIdx, dIdx),
-                  color: Colors.red.withOpacity(0.7),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _smallIcon(IconData i, VoidCallback fn, {Color? color}) =>
-      GestureDetector(
-        onTap: fn,
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Icon(i, size: 12, color: color ?? Colors.grey),
-        ),
-      );
-  Widget _addBtn(VoidCallback fn) => GestureDetector(
-    onTap: fn,
-    child: Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.white10),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: const Icon(LucideIcons.plus, color: Colors.grey),
-    ),
-  );
-
-  void _addMonth() {
-    program.add({"name": "New Month", "weeks": []});
-    onUpdate();
-  }
-
-  void _deleteMonth(int i) {
-    program.removeAt(i);
-    onUpdate();
-  }
-
-  void _duplicateMonth(int i) {
-    program.add(json.decode(json.encode(program[i])));
-    onUpdate();
-  }
-
-  void _addWeek(int m) {
-    program[m]['weeks'].add({"name": "New Week", "days": []});
-    onUpdate();
-  }
-
-  void _deleteWeek(int m, int w) {
-    program[m]['weeks'].removeAt(w);
-    onUpdate();
-  }
-
-  void _duplicateWeek(int m, int w) {
-    program[m]['weeks'].add(json.decode(json.encode(program[m]['weeks'][w])));
-    onUpdate();
-  }
-
-  void _addDay(int m, int w) {
-    program[m]['weeks'][w]['days'].add({"name": "New Day", "exercises": []});
-    onUpdate();
-  }
-
-  void _deleteDay(int m, int w, int d) {
-    program[m]['weeks'][w]['days'].removeAt(d);
-    onUpdate();
-  }
-
-  void _duplicateDay(int m, int w, int d) {
-    program[m]['weeks'][w]['days'].add(
-      json.decode(json.encode(program[m]['weeks'][w]['days'][d])),
-    );
-    onUpdate();
-  }
-
-  void _rename(BuildContext context, dynamic item) {
-    TextEditingController c = TextEditingController(text: item['name']);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Rename"),
-        content: TextField(controller: c, autofocus: true),
-        actions: [
-          TextButton(
-            onPressed: () {
-              item['name'] = c.text;
-              onUpdate();
-              Navigator.pop(ctx);
-            },
-            child: const Text("SAVE"),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// --- EXERCISE EDITOR PAGE ---
-class ExerciseEditor extends StatefulWidget {
-  final Map<String, dynamic> dayData;
-  final VoidCallback onSave;
-  const ExerciseEditor({
-    super.key,
-    required this.dayData,
-    required this.onSave,
-  });
-  @override
-  State<ExerciseEditor> createState() => _ExerciseEditorState();
-}
-
-class _ExerciseEditorState extends State<ExerciseEditor> {
-  // CRASH PROTECTION: List of valid units
-  final List<String> validUnits = [
-    'kg',
-    'plate',
-    'lbs',
-    'run (mins)',
-    'run (km)',
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    List exList = widget.dayData['exercises'];
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(widget.dayData['name']),
-      ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: exList.length,
-        itemBuilder: (context, i) => _exTile(i),
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: const Color(0xFF00D1B2),
-        onPressed: () {
-          setState(
-            () =>
-                exList.add({"name": "New Exercise", "unit": "kg", "sets": []}),
-          );
-          widget.onSave();
-        },
-        child: const Icon(LucideIcons.plus, color: Colors.black),
-      ),
-    );
-  }
-
-  Widget _exTile(int i) {
-    var ex = widget.dayData['exercises'][i];
-
-    // AUTOMATIC MIGRATION: Fixes the crash for old "run" data
-    if (!validUnits.contains(ex['unit'])) {
-      ex['unit'] = 'run (mins)';
-    }
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF161618),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: GestureDetector(
-                  onTap: () => _renameEx(ex),
-                  child: Text(
-                    ex['name'],
-                    style: const TextStyle(
-                      color: Color(0xFF00D1B2),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              DropdownButton<String>(
-                value: ex['unit'],
-                underline: const SizedBox(),
-                items: validUnits
-                    .map(
-                      (u) => DropdownMenuItem(
-                        value: u,
-                        child: Text(u, style: const TextStyle(fontSize: 12)),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (v) {
-                  setState(() => ex['unit'] = v);
-                  widget.onSave();
-                },
-              ),
-              IconButton(
-                icon: const Icon(LucideIcons.copy, size: 14),
-                onPressed: () {
-                  setState(
-                    () => widget.dayData['exercises'].add(
-                      json.decode(json.encode(ex)),
-                    ),
-                  );
-                  widget.onSave();
-                },
-              ),
-              IconButton(
-                icon: const Icon(
-                  LucideIcons.trash2,
-                  size: 14,
-                  color: Colors.redAccent,
-                ),
-                onPressed: () {
-                  setState(() => widget.dayData['exercises'].removeAt(i));
-                  widget.onSave();
-                },
-              ),
-            ],
-          ),
-          ...List.generate(ex['sets'].length, (si) => _setRow(ex, si)),
-          TextButton(
-            onPressed: () {
-              setState(
-                () =>
-                    ex['sets'].add({"reps": 10, "weight": 0.0, "done": false}),
-              );
-              widget.onSave();
-            },
-            child: const Text("+ Add Set"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _setRow(dynamic ex, int si) {
-    var s = ex['sets'][si];
-    bool isCardio = ex['unit'] == 'run (mins)' || ex['unit'] == 'run (km)';
-    String label = ex['unit'] == 'run (mins)'
-        ? 'mins'
-        : (ex['unit'] == 'run (km)' ? 'km' : 'reps');
-
-    return Row(
-      children: [
-        Checkbox(
-          value: s['done'],
-          activeColor: const Color(0xFF00D1B2),
-          onChanged: (v) {
-            setState(() => s['done'] = v);
-            widget.onSave();
-          },
-        ),
-        Text("Set ${si + 1}"),
-        const Spacer(),
-        _num(s, 'reps', label),
-        if (!isCardio) ...[
-          const SizedBox(width: 5),
-          _num(s, 'weight', ex['unit']),
-        ],
-      ],
-    );
-  }
-
-  Widget _num(dynamic s, String k, String u) => GestureDetector(
-    onTap: () {
-      TextEditingController c = TextEditingController(text: s[k].toString());
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          content: TextField(
-            controller: c,
-            keyboardType: TextInputType.number,
-            autofocus: true,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() => s[k] = double.tryParse(c.text) ?? 0);
-                widget.onSave();
-                Navigator.pop(ctx);
-              },
-              child: const Text("OK"),
-            ),
-          ],
-        ),
-      );
-    },
-    child: Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text("${s[k]} $u", style: const TextStyle(fontSize: 12)),
-    ),
-  );
-
-  void _renameEx(dynamic ex) {
-    TextEditingController c = TextEditingController(text: ex['name']);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Rename Exercise"),
-        content: TextField(controller: c, autofocus: true),
-        actions: [
-          TextButton(
-            onPressed: () {
-              setState(() => ex['name'] = c.text);
-              widget.onSave();
-              Navigator.pop(ctx);
-            },
-            child: const Text("SAVE"),
-          ),
-        ],
       ),
     );
   }
