@@ -13,6 +13,8 @@ import 'package:csv/csv.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'dart:typed_data';
+import 'package:file_saver/file_saver.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -786,6 +788,7 @@ class ProgramBuilderPage extends StatelessWidget {
 
   // --- CSV FEATURE: EXPORT TEMPLATE ---
   Future<void> _generateTemplate() async {
+    // 1. Create your CSV content
     List<List<String>> csvContent = [
       ["Month", "Week", "Day", "Exercise", "Unit", "Reps_List", "Weights_List"],
       [
@@ -798,11 +801,20 @@ class ProgramBuilderPage extends StatelessWidget {
         "40-45-50",
       ],
     ];
+
+    // 2. Convert to String
     String csvString = const ListToCsvConverter().convert(csvContent);
-    final directory = await getTemporaryDirectory();
-    final file = File('${directory.path}/workout_template.csv');
-    await file.writeAsString(csvString);
-    await Share.shareXFiles([XFile(file.path)], text: 'Workout CSV Template');
+
+    // 3. Convert String to Bytes (Required for universal saving)
+    Uint8List bytes = Uint8List.fromList(csvString.codeUnits);
+
+    // 4. Save the file using FileSaver (Works on Android, iOS, Web, Windows, Mac)
+    await FileSaver.instance.saveFile(
+      name: 'workout_template',
+      bytes: bytes,
+      ext: 'csv',
+      mimeType: MimeType.csv,
+    );
   }
 
   // --- CSV FEATURE: IMPORT LOGIC ---
