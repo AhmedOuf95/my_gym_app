@@ -988,6 +988,9 @@ class ProgramBuilderPage extends StatelessWidget {
                 builder: (c) => ExerciseEditor(dayData: day, onSave: onUpdate),
               ),
             ),
+            // --- ADD THIS LINE ---
+            onLongPress: () => _rename(context, day),
+            // --------------------
             borderRadius: BorderRadius.circular(12),
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -1002,9 +1005,19 @@ class ProgramBuilderPage extends StatelessWidget {
                       fontSize: 13,
                     ),
                   ),
+                  const SizedBox(height: 4), // Added for spacing
                   Text(
                     "${day['exercises'].length} exercises",
                     style: const TextStyle(color: Colors.grey, fontSize: 10),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    "Hold to rename", // Helpful hint for the user
+                    style: TextStyle(
+                      color: Colors.white24,
+                      fontSize: 8,
+                      fontStyle: FontStyle.italic,
+                    ),
                   ),
                 ],
               ),
