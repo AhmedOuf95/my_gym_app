@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 // Firebase Imports
@@ -7,9 +8,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 
+// CSV & File System Imports
+import 'package:csv/csv.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialize Firebase using the file you generated
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const GymApp());
 }
@@ -24,7 +30,6 @@ class GymApp extends StatelessWidget {
         scaffoldBackgroundColor: Colors.black,
         primaryColor: const Color(0xFF00D1B2),
       ),
-      // AuthGate decides if we show Login or the Main App
       home: const AuthGate(),
     );
   }
@@ -39,11 +44,9 @@ class AuthGate extends StatelessWidget {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
-        // If Firebase has a user session, go to the app
         if (snapshot.hasData) {
           return const MainNavigation();
         }
-        // Otherwise, show the Login screen
         return const LoginPage();
       },
     );
@@ -68,7 +71,6 @@ class _MainNavigationState extends State<MainNavigation> {
     _loadData();
   }
 
-  // --- NEW: Load data from Firestore instead of SharedPreferences ---
   Future<void> _loadData() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -90,7 +92,6 @@ class _MainNavigationState extends State<MainNavigation> {
     setState(() => _isLoading = false);
   }
 
-  // --- NEW: Save data to Firestore instead of SharedPreferences ---
   Future<void> _save() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -181,7 +182,6 @@ class _MainNavigationState extends State<MainNavigation> {
           ],
         ),
         actions: [
-          // Sign Out button to test different accounts
           IconButton(
             icon: const Icon(LucideIcons.logOut, size: 18),
             onPressed: () => FirebaseAuth.instance.signOut(),
@@ -225,13 +225,11 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _auth() async {
     try {
-      // First try to sign in
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _email.text.trim(),
         password: _pass.text.trim(),
       );
     } on FirebaseAuthException catch (e) {
-      // If user doesn't exist, create the account
       if (e.code == 'user-not-found' || e.code == 'invalid-credential') {
         try {
           await FirebaseAuth.instance.createUserWithEmailAndPassword(
@@ -300,9 +298,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// --- REMAINING WIDGETS (DASHBOARD, WORKOUT, BUILDER, EDITOR) ---
-// These remain largely the same, but using the _save and _programData passed from MainNavigation
-
+// --- DASHBOARD PAGE ---
 class DashboardPage extends StatelessWidget {
   final List<dynamic> program;
   final int currentDayIdx;
@@ -508,6 +504,7 @@ class DashboardPage extends StatelessWidget {
   );
 }
 
+// --- WORKOUT SESSION PAGE ---
 class WorkoutSessionPage extends StatefulWidget {
   final Map<String, dynamic>? dayData;
   final List<dynamic> program;
@@ -777,9 +774,7 @@ class _WorkoutSessionPageState extends State<WorkoutSessionPage> {
   }
 }
 
-// ... NOTE: Include ProgramBuilderPage and ExerciseEditor classes from your original code here ...
-// Make sure all calls to 'onUpdate' or 'onSave' trigger the _save() function in MainNavigation.
-
+// --- PROGRAM BUILDER PAGE ---
 class ProgramBuilderPage extends StatelessWidget {
   final List<dynamic> program;
   final VoidCallback onUpdate;
@@ -788,6 +783,106 @@ class ProgramBuilderPage extends StatelessWidget {
     required this.program,
     required this.onUpdate,
   });
+
+  // --- CSV FEATURE: EXPORT TEMPLATE ---
+  Future<void> _generateTemplate() async {
+    List<List<String>> csvContent = [
+      ["Month", "Week", "Day", "Exercise", "Unit", "Reps_List", "Weights_List"],
+      [
+        "Phase 1",
+        "Week 1",
+        "Day 1 (Pull)",
+        "Lat Pull Down",
+        "kg",
+        "15-14-13",
+        "40-45-50",
+      ],
+    ];
+    String csvString = const ListToCsvConverter().convert(csvContent);
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/workout_template.csv');
+    await file.writeAsString(csvString);
+    await Share.shareXFiles([XFile(file.path)], text: 'Workout CSV Template');
+  }
+
+  // --- CSV FEATURE: IMPORT LOGIC ---
+  Future<void> _importCSV(BuildContext context) async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+    );
+    if (result == null) return;
+
+    try {
+      final file = File(result.files.single.path!);
+      final bytes = await file.readAsBytes();
+      final csvString = utf8.decode(bytes);
+      final rows = const CsvToListConverter().convert(csvString);
+
+      if (rows.length < 2) return;
+      rows.removeAt(0); // Remove Header
+
+      for (var row in rows) {
+        if (row.length < 7) continue;
+        String mName = row[0].toString();
+        String wName = row[1].toString();
+        String dName = row[2].toString();
+        String eName = row[3].toString();
+        String unit = row[4].toString();
+        String repsListRaw = row[5].toString();
+        String weightsListRaw = row[6].toString();
+
+        var month = program.firstWhere(
+          (m) => m['name'] == mName,
+          orElse: () {
+            var m = {"name": mName, "weeks": []};
+            program.add(m);
+            return m;
+          },
+        );
+
+        var week = month['weeks'].firstWhere(
+          (w) => w['name'] == wName,
+          orElse: () {
+            var w = {"name": wName, "days": []};
+            month['weeks'].add(w);
+            return w;
+          },
+        );
+
+        var day = week['days'].firstWhere(
+          (d) => d['name'] == dName,
+          orElse: () {
+            var d = {"name": dName, "exercises": []};
+            week['days'].add(d);
+            return d;
+          },
+        );
+
+        List<String> reps = repsListRaw.split('-');
+        List<String> weights = weightsListRaw.split('-');
+        List<Map<String, dynamic>> sets = [];
+
+        for (int i = 0; i < reps.length; i++) {
+          sets.add({
+            "reps": double.tryParse(reps[i].trim()) ?? 0,
+            "weight": double.tryParse(weights[i].trim()) ?? 0,
+            "done": false,
+          });
+        }
+        day['exercises'].add({"name": eName, "unit": unit, "sets": sets});
+      }
+
+      onUpdate();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Imported!")));
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error: $e")));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -799,6 +894,15 @@ class ProgramBuilderPage extends StatelessWidget {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          // ADDED CSV ACTIONS HERE
+          IconButton(
+            icon: const Icon(LucideIcons.download),
+            onPressed: _generateTemplate,
+          ),
+          IconButton(
+            icon: const Icon(LucideIcons.fileUp),
+            onPressed: () => _importCSV(context),
+          ),
           IconButton(
             icon: const Icon(LucideIcons.plusCircle, color: Color(0xFF00D1B2)),
             onPressed: () => _addMonth(),
@@ -1066,6 +1170,7 @@ class ProgramBuilderPage extends StatelessWidget {
   }
 }
 
+// --- EXERCISE EDITOR PAGE ---
 class ExerciseEditor extends StatefulWidget {
   final Map<String, dynamic> dayData;
   final VoidCallback onSave;
@@ -1278,6 +1383,7 @@ class _ExerciseEditorState extends State<ExerciseEditor> {
   }
 }
 
+// --- READ ONLY PROGRAM VIEW ---
 class ReadOnlyProgramView extends StatelessWidget {
   final List<dynamic> program;
   final ScrollController scrollController;
