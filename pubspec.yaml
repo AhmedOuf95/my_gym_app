@@ -62,9 +62,13 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/icon/app_icon.png" # Path to your dumbbell image
-  adaptive_icon_background: "#000000"    # Black background to match your app
-  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#000000" # Matches your app's black theme
+  web:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    background_color: "#000000"
+    theme_color: "#00D1B2"
 
 
 # For information on the generic Dart part of this file, see the
