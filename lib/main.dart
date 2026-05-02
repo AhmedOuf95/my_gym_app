@@ -827,19 +827,36 @@ class ProgramBuilderPage extends StatelessWidget {
 
   // --- CSV FEATURE: IMPORT LOGIC ---
   Future<void> _importCSV(BuildContext context) async {
+    // 1. Open the file picker with 'withData: true' to ensure
+    // it works on Web and Mobile.
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv'],
+      withData: true,
     );
+
     if (result == null) return;
 
     try {
-      final file = File(result.files.single.path!);
-      final bytes = await file.readAsBytes();
-      final csvString = utf8.decode(bytes);
-      final rows = const CsvToListConverter().convert(csvString);
+      String csvString;
+      final fileData = result.files.single;
 
+      // 2. UNIVERSAL READ: This avoids the 'path' error entirely.
+      if (fileData.bytes != null) {
+        // This works on Web, iOS, Android, and PC.
+        csvString = utf8.decode(fileData.bytes!);
+      } else if (fileData.path != null) {
+        // Fallback for native platforms if bytes weren't cached[cite: 2].
+        final file = File(fileData.path!);
+        csvString = await file.readAsString();
+      } else {
+        throw "Could not read file data.";
+      }
+
+      // 3. Process the CSV as before[cite: 2].
+      final rows = const CsvToListConverter().convert(csvString);
       if (rows.length < 2) return;
+
       rows.removeAt(0); // Remove Header
 
       for (var row in rows) {
@@ -893,10 +910,11 @@ class ProgramBuilderPage extends StatelessWidget {
         day['exercises'].add({"name": eName, "unit": unit, "sets": sets});
       }
 
+      // 4. Save and Update[cite: 2].
       onUpdate();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Imported!")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Program Imported Successfully!")),
+      );
     } catch (e) {
       ScaffoldMessenger.of(
         context,
