@@ -827,8 +827,7 @@ class ProgramBuilderPage extends StatelessWidget {
 
   // --- CSV FEATURE: IMPORT LOGIC ---
   Future<void> _importCSV(BuildContext context) async {
-    // 1. Open the file picker with 'withData: true' to ensure
-    // it works on Web and Mobile.
+    // 1. Open the file picker with 'withData: true' to ensure it works on Web.
     FilePickerResult? result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['csv'],
@@ -841,34 +840,36 @@ class ProgramBuilderPage extends StatelessWidget {
       String csvString;
       final fileData = result.files.single;
 
-      // 2. UNIVERSAL READ: This avoids the 'path' error entirely.
+      // 2. UNIVERSAL READ: Safely handles Web, iOS, Android, and PC.
       if (fileData.bytes != null) {
-        // This works on Web, iOS, Android, and PC.
         csvString = utf8.decode(fileData.bytes!);
       } else if (fileData.path != null) {
-        // Fallback for native platforms if bytes weren't cached[cite: 2].
         final file = File(fileData.path!);
         csvString = await file.readAsString();
       } else {
         throw "Could not read file data.";
       }
 
-      // 3. Process the CSV as before[cite: 2].
+      // 3. Process the CSV rows.
       final rows = const CsvToListConverter().convert(csvString);
       if (rows.length < 2) return;
 
-      rows.removeAt(0); // Remove Header
+      rows.removeAt(0); // Skip the header row
 
       for (var row in rows) {
         if (row.length < 7) continue;
-        String mName = row[0].toString();
-        String wName = row[1].toString();
-        String dName = row[2].toString();
-        String eName = row[3].toString();
-        String unit = row[4].toString();
+
+        // Apply .trim() to remove invisible spaces from your CSV.
+        String mName = row[0].toString().trim();
+        String wName = row[1].toString().trim();
+        String dName = row[2].toString().trim();
+        String eName = row[3].toString().trim();
+        String unit = row[4].toString().trim();
+
         String repsListRaw = row[5].toString();
         String weightsListRaw = row[6].toString();
 
+        // Find or create the Month.
         var month = program.firstWhere(
           (m) => m['name'] == mName,
           orElse: () {
@@ -878,6 +879,7 @@ class ProgramBuilderPage extends StatelessWidget {
           },
         );
 
+        // Find or create the Week.
         var week = month['weeks'].firstWhere(
           (w) => w['name'] == wName,
           orElse: () {
@@ -887,6 +889,7 @@ class ProgramBuilderPage extends StatelessWidget {
           },
         );
 
+        // Find or create the Day.
         var day = week['days'].firstWhere(
           (d) => d['name'] == dName,
           orElse: () {
@@ -896,6 +899,7 @@ class ProgramBuilderPage extends StatelessWidget {
           },
         );
 
+        // Process Sets.
         List<String> reps = repsListRaw.split('-');
         List<String> weights = weightsListRaw.split('-');
         List<Map<String, dynamic>> sets = [];
@@ -907,10 +911,12 @@ class ProgramBuilderPage extends StatelessWidget {
             "done": false,
           });
         }
+
+        // Add the exercise to the grouping.
         day['exercises'].add({"name": eName, "unit": unit, "sets": sets});
       }
 
-      // 4. Save and Update[cite: 2].
+      // 4. Save to Firebase and refresh the UI.
       onUpdate();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Program Imported Successfully!")),
